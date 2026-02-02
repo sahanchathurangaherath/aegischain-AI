@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: aegischain_db
+    environment:
+      POSTGRES_DB: aegischain_db
+      POSTGRES_USER: aegis_user
+      POSTGRES_PASSWORD: aegis_password_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aegischain_network
+
+networks:
+  aegischain_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
