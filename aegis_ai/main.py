@@ -7,6 +7,7 @@ import logging
 from config.settings import settings
 from services.erp_client import ERPClient
 from agents.dummy_agent import DummyAgent
+from agents.inventory_agent import InventoryAgent
 from schemas.agent_schemas import AgentContext, AgentResult
 
 # Configure logging
@@ -152,6 +153,26 @@ async def test_erp_connection():
         }
 
 
+@app.post("/api/agents/inventory", response_model=AgentResult)
+async def run_inventory_agent(context: AgentContext):
+    """
+    Run the Inventory Agent
+    
+    Analyzes inventory levels, detects variance, and generates recommendations.
+    
+
+    """
+    try:
+        agent = InventoryAgent()
+        result = await agent.execute(context.model_dump())
+        return result
+    except Exception as e:
+        logger.error(f"Error running inventory agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -186,3 +207,4 @@ if __name__ == "__main__":
         port=settings.PORT,
         reload=settings.DEBUG
     )
+

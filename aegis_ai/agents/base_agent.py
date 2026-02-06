@@ -90,9 +90,13 @@ class BaseAgent(ABC):
             params: Query parameters
         
         Returns:
-            API response data
+            API response data (extracts 'results' from paginated responses)
         """
-        return await self.erp_client.get(endpoint, params)
+        response = await self.erp_client.get(endpoint, params)
+        # Handle paginated responses
+        if isinstance(response, dict) and "results" in response:
+            return response.get("results", [])
+        return response
     
     async def post_erp_data(self, endpoint: str, data: Dict) -> Any:
         """
