@@ -9,6 +9,8 @@ from services.erp_client import ERPClient
 from agents.dummy_agent import DummyAgent
 from agents.inventory_agent import InventoryAgent
 from schemas.agent_schemas import AgentContext, AgentResult
+from orchestrator.orchestrator import get_orchestrator
+from schemas.agent_schemas import OrchestrationRequest, OrchestrationResponse
 
 # Configure logging
 logging.basicConfig(
@@ -170,7 +172,40 @@ async def run_inventory_agent(context: AgentContext):
         logger.error(f"Error running inventory agent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/orchestrate", response_model=OrchestrationResponse)
+async def orchestrate(request: OrchestrationRequest):
+    """
+    Main orchestration endpoint - The brain of AegisChain
+    
+    This endpoint:
+    1. Analyzes the query to determine which agents to run
+    2. Executes agents in parallel
+    3. Combines results
+    4. Makes a final decision
+    5. Returns actionable recommendations
+    
+   
+    """
+    try:
+        orchestrator = get_orchestrator()
+        response = await orchestrator.orchestrate(request)
+        return response
+    except Exception as e:
+        logger.error(f"Orchestration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/orchestrate/info")
+async def orchestrator_info():
+    """Get information about the orchestrator"""
+    orchestrator = get_orchestrator()
+    
+    return {
+        "available_agents": list(orchestrator.agents.keys()),
+        "agent_count": len(orchestrator.agents),
+        "intent_keywords": orchestrator.classifier.intent_keywords,
+        "status": "operational"
+    }
 
 
 # Error handlers
