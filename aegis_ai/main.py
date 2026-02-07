@@ -8,6 +8,9 @@ from config.settings import settings
 from services.erp_client import ERPClient
 from agents.dummy_agent import DummyAgent
 from agents.inventory_agent import InventoryAgent
+from agents.forecast_agent import ForecastAgent
+from agents.supplier_risk_agent import SupplierRiskAgent
+
 from schemas.agent_schemas import AgentContext, AgentResult
 from orchestrator.orchestrator import get_orchestrator
 from schemas.agent_schemas import OrchestrationRequest, OrchestrationResponse
@@ -192,6 +195,45 @@ async def orchestrate(request: OrchestrationRequest):
         return response
     except Exception as e:
         logger.error(f"Orchestration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+@app.post("/api/agents/forecast", response_model=AgentResult)
+async def run_forecast_agent(context: AgentContext):
+    """
+    Run the Forecast Agent
+    
+    Predicts future demand and identifies potential shortages.
+    
+   
+    """
+    try:
+        agent = ForecastAgent()
+        result = await agent.execute(context.model_dump())
+        return result
+    except Exception as e:
+        logger.error(f"Error running forecast agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+# Add endpoint
+@app.post("/api/agents/supplier-risk", response_model=AgentResult)
+async def run_supplier_risk_agent(context: AgentContext):
+    """
+    Run the Supplier Risk Agent
+    
+    Assesses supplier reliability and delivery performance.
+    
+
+    """
+    try:
+        agent = SupplierRiskAgent()
+        result = await agent.execute(context.model_dump())
+        return result
+    except Exception as e:
+        logger.error(f"Error running supplier risk agent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

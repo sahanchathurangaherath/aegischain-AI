@@ -6,6 +6,7 @@ import logging
 
 from orchestrator.intent_classifier import IntentClassifier
 from agents.inventory_agent import InventoryAgent
+from agents.forecast_agent import ForecastAgent
 from schemas.agent_schemas import (
     AgentResult, 
     OrchestrationRequest, 
@@ -32,7 +33,7 @@ class Orchestrator:
         # Initialize available agents
         self.agents = {
             'inventory': InventoryAgent(),
-            # 'forecast': ForecastAgent(),        # Phase 8
+            'forecast': ForecastAgent(),        
             # 'supplier_risk': SupplierRiskAgent() # Phase 9
         }
         
