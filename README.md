@@ -12,7 +12,7 @@
 
 ## 🎯 What is AegisChain?
 
-**AegisChain** is a next-generation AI-powered supply chain control tower that combines the reliability of traditional ERP systems with the intelligence of multi-agent AI orchestration. Named after "Aegis" (shield/protection) and "Chain" (supply chain), it provides a protective intelligence layer over your supply chain operations.
+**AegisChain** is a next-generation AI-powered supply chain controler that combines the reliability of traditional ERP systems with the intelligence of multi-agent AI orchestration. Named after "Aegis" (shield/protection) and "Chain" (supply chain), it provides a protective intelligence layer over your supply chain operations.
 
 ### The Problem
 
