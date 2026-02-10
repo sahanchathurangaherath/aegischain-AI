@@ -1,6 +1,6 @@
 # 🛡️ AegisChain
 
-> **Enterprise-Grade AI Supply Chain Control Tower**
+> **Enterprise-Grade AI Supply Chain Controller**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Django](https://img.shields.io/badge/Django-5.0+-green.svg)](https://www.djangoproject.com/)
