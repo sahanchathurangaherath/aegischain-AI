@@ -143,7 +143,7 @@ Modern supply chains suffer from:
 - Python 3.11+
 - Node.js 18+
 - PostgreSQL 15+
-- Docker & Docker Compose (optional)
+- Docker & Docker Compose
 
 ### Quick Start
 
