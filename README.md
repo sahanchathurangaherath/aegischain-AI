@@ -130,7 +130,7 @@ Modern supply chains suffer from:
 | **AI Layer** | FastAPI, Python 3.11+, AsyncIO |
 | **Backend** | Django 5.0+, Django REST Framework |
 | **Database** | PostgreSQL 15+ |
-| **Vector DB** | ChromaDB / Weaviate |
+| **Vector DB** | ChromaDB  |
 | **ML/AI** | Scikit-learn, NumPy, Pandas |
 | **Testing** | Pytest, Django TestCase |
 | **DevOps** | Docker, Docker Compose |
