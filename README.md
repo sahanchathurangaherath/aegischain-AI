@@ -289,11 +289,6 @@ Built with modern AI capabilities to democratize enterprise supply chain intelli
 
 ---
 
-## 📧 Contact
-
-**Project Maintainer**: Your Name  
-**Email**: your.email@example.com  
-**LinkedIn**: [Your Profile](https://linkedin.com/in/yourprofile)
 
 ---
 
