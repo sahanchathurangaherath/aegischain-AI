@@ -1,34 +1,51 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
+import sys
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """
-    Application settings loaded from environment variables
+    Application settings loaded from environment variables.
     """
-    
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
     # FastAPI Settings
-    APP_NAME: str = "AegisChain AI "
+    APP_NAME: str = "AegisChain AI"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = True
+    DEBUG: bool = False
     HOST: str = "0.0.0.0"
     PORT: int = 8001
-    
+
+    # CORS Settings
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
+
     # ERP Connection
     ERP_API_URL: str = "http://localhost:8000/api"
-    ERP_API_TOKEN: str = "aegis_erp_token_12345"
-    
+    ERP_API_TOKEN: str = ""
+
     # AI Settings
     MAX_AGENTS: int = 10
     AGENT_TIMEOUT: int = 30
     ENABLE_LOGGING: bool = True
-    
-    # Vector Database
-    VECTOR_DB_PATH: str = "./chroma_db"
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+
+    @model_validator(mode="after")
+    def validate_required_secrets(self) -> "Settings":
+        if not self.DEBUG and not self.ERP_API_TOKEN and "pytest" not in sys.modules:
+            raise ValueError("ERP_API_TOKEN must be set when DEBUG is False")
+        return self
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.CORS_ALLOWED_ORIGINS.split(",")
+            if origin.strip()
+        ]
 
 
 # Global settings instance
