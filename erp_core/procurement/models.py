@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 from django.utils import timezone
@@ -103,9 +104,21 @@ class Supplier(TimeStampedModel, ActiveModel):
         return f"{self.supplier_code} - {self.name}"
     
     def update_reliability_score(self):
-        """Calculate reliability based on historical performance"""
-        # This will be implemented when we have shipment data
-        pass
+        """Calculate reliability based on historical shipment performance."""
+        received_shipments = Shipment.objects.filter(
+            purchase_order__supplier=self,
+            status='RECEIVED',
+        )
+        total = received_shipments.count()
+        if total == 0:
+            return
+        on_time = received_shipments.filter(delay_days__lte=0).count()
+        self.on_time_delivery_rate = round((on_time / total) * 100.0, 2)
+        quality_component = (self.quality_rating / 5.0) * 100.0
+        self.reliability_score = round(
+            0.7 * self.on_time_delivery_rate + 0.3 * quality_component, 2
+        )
+        self.save(update_fields=['on_time_delivery_rate', 'reliability_score', 'updated_at'])
 
 
 class PurchaseOrder(TimeStampedModel):
@@ -123,6 +136,16 @@ class PurchaseOrder(TimeStampedModel):
         ('RECEIVED', 'Fully Received'),
         ('CANCELLED', 'Cancelled'),
     ]
+
+    VALID_TRANSITIONS = {
+        'DRAFT': {'SUBMITTED', 'CANCELLED'},
+        'SUBMITTED': {'CONFIRMED', 'CANCELLED'},
+        'CONFIRMED': {'SHIPPED', 'CANCELLED'},
+        'SHIPPED': {'PARTIALLY_RECEIVED', 'RECEIVED'},
+        'PARTIALLY_RECEIVED': {'RECEIVED'},
+        'RECEIVED': set(),
+        'CANCELLED': set(),
+    }
     
     # Header Information
     po_number = models.CharField(
@@ -192,6 +215,18 @@ class PurchaseOrder(TimeStampedModel):
         self.tax_amount = self.subtotal * Decimal('0.10')  # 10% tax
         self.total_amount = self.subtotal + self.tax_amount
         self.save()
+
+    def transition_to(self, new_status: str) -> None:
+        """Transition PO to a new status, rejecting invalid state transitions."""
+        allowed = self.VALID_TRANSITIONS.get(self.status, set())
+        if new_status not in allowed:
+            raise ValidationError(
+                f"Invalid purchase order transition from '{self.status}' to '{new_status}'."
+            )
+        self.status = new_status
+        if new_status == 'RECEIVED' and not self.actual_delivery_date:
+            self.actual_delivery_date = timezone.now().date()
+        self.save(update_fields=['status', 'actual_delivery_date', 'updated_at'])
     
     @property
     def is_overdue(self):
