@@ -1,80 +1,103 @@
-import asyncio
 import httpx
+import pytest
+import respx
+from httpx import ASGITransport, AsyncClient
+
+from config.settings import settings
+from main import app
 
 
-BASE_URL = "http://localhost:8001"
+@pytest.mark.asyncio
+@respx.mock
+async def test_health_endpoint():
+    """Health check endpoint returns healthy status when ERP is reachable."""
+    base = settings.ERP_API_URL
+    respx.get(f"{base}/inventory/products/").mock(
+        return_value=httpx.Response(200, json=[{"id": 1, "product_code": "RM-STEEL-001"}])
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert data["erp_connection"] == "ok"
 
 
-async def test_health():
-    """Test health endpoint"""
-    print("\n" + "="*60)
-    print("Testing Health Endpoint")
-    print("="*60)
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{BASE_URL}/health")
-        print(f"Status: {response.status_code}")
-        print(f"Response: {response.json()}")
-
-
-async def test_dummy_agent():
-    """Test dummy agent"""
-    print("\n" + "="*60)
-    print("Testing Dummy Agent")
-    print("="*60)
-    
-    request_data = {
-        "product_code": "RM-STEEL-001",
-        "warehouse_code": "WH-MAIN-01",
-        "analysis_type": "test",
-        "parameters": {}
-    }
-    
-    async with httpx.AsyncClient() as client:
+@pytest.mark.asyncio
+async def test_dummy_agent_endpoint():
+    """Dummy agent returns valid AgentResult structure."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            f"{BASE_URL}/api/test/dummy-agent",
-            json=request_data
+            "/api/test/dummy-agent",
+            json={
+                "product_code": "RM-STEEL-001",
+                "warehouse_code": "WH-MAIN-01",
+                "analysis_type": "test",
+                "parameters": {},
+            },
         )
-        print(f"Status: {response.status_code}")
-        result = response.json()
-        print(f"Agent: {result['agent_name']}")
-        print(f"Risk Level: {result['risk_level']}")
-        print(f"Findings: {result['findings']}")
-        print(f"Execution Time: {result['execution_time_ms']:.2f}ms")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "Dummy Agent"
+    assert "findings" in data
 
 
-async def test_erp_connection():
-    """Test ERP connection"""
-    print("\n" + "="*60)
-    print("Testing ERP Connection")
-    print("="*60)
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{BASE_URL}/api/test/erp-connection")
-        print(f"Status: {response.status_code}")
-        result = response.json()
-        print(f"Success: {result['success']}")
-        print(f"Message: {result['message']}")
+@pytest.mark.asyncio
+@respx.mock
+async def test_supplier_risk_agent_flags_delayed_supplier():
+    """Supplier Risk Agent flags high/critical risk when supplier has delayed shipments."""
+    base = settings.ERP_API_URL
 
+    respx.get(f"{base}/procurement/suppliers/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "supplier_code": "SUP-001",
+                    "name": "Apex Metals Ltd",
+                    "supplier_type": "MANUFACTURER",
+                    "reliability_score": 60.0,
+                    "risk_level": "HIGH",
+                }
+            ],
+        )
+    )
+    respx.get(f"{base}/procurement/shipments/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "shipment_number": "SHP-001",
+                    "status": "DELAYED",
+                    "delay_days": 9,
+                    "actual_arrival_date": "2026-10-15",
+                    "expected_arrival_date": "2026-10-06",
+                },
+                {
+                    "shipment_number": "SHP-002",
+                    "status": "DELAYED",
+                    "delay_days": 8,
+                    "actual_arrival_date": "2026-10-20",
+                    "expected_arrival_date": "2026-10-12",
+                },
+            ],
+        )
+    )
 
-async def main():
-    """Run all tests"""
-    print("\n" + "="*60)
-    print("AegisChain AI Framework Test Suite")
-    print("="*60)
-    
-    try:
-        await test_health()
-        await test_dummy_agent()
-        await test_erp_connection()
-        
-        print("\n" + "="*60)
-        print("✓ All tests passed!")
-        print("="*60)
-    
-    except Exception as e:
-        print(f"\n✗ Test failed: {e}")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/supplier-risk",
+            json={"supplier_code": "SUP-001"},
+        )
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "Supplier Risk Agent"
+    assert data["risk_level"] in ("high", "critical")
+    assert data["findings"]["supplier_code"] == "SUP-001"
