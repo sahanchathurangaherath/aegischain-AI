@@ -1,146 +1,122 @@
-import asyncio
 import httpx
+import pytest
+import respx
+from httpx import ASGITransport, AsyncClient
+
+from config.settings import settings
+from main import app
 
 
-BASE_URL = "http://localhost:8001"
-
-
-async def test_specific_item_forecast():
-    """Test forecast for specific item"""
-    print("\n" + "="*60)
-    print("Test 1: Specific Item Forecast")
-    print("="*60)
-    
-    request_data = {
-        "product_code": "RM-STEEL-001",
-        "warehouse_code": "WH-MAIN-01",
-        "analysis_type": "demand_forecast"
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/api/agents/forecast",
-            json=request_data
-        )
-        
-        result = response.json()
-        
-        print(f"\n📊 Agent: {result['agent_name']}")
-        print(f"⚠️  Risk Level: {result['risk_level'].upper()}")
-        print(f"🎯 Confidence: {result['confidence']}")
-        
-        findings = result['findings']
-        print(f"\n📈 Forecast Results:")
-        print(f"  • Current Stock: {findings.get('current_stock')}")
-        print(f"  • Daily Avg Demand: {findings.get('daily_avg')}")
-        print(f"  • Total Forecast ({findings.get('forecast_horizon_days', 30)} days): {findings.get('total_demand')}")
-        print(f"  • Days of Supply: {findings.get('days_of_supply')}")
-        print(f"  • Trend: {findings.get('trend')}")
-        
-        if findings.get('shortage_date'):
-            print(f"  • ⚠️  Predicted Shortage Date: {findings['shortage_date']}")
-        
-        print(f"\n💡 Recommendations:")
-        for i, rec in enumerate(result['recommendations'], 1):
-            print(f"  {i}. {rec}")
-
-
-async def test_multi_agent_orchestration():
-    """Test orchestration with multiple agents"""
-    print("\n" + "="*60)
-    print("Test 2: Multi-Agent Orchestration")
-    print("="*60)
-    
-    request_data = {
-        "query": "Analyze steel inventory status and predict future needs",
-        "context": {
-            "product_code": "RM-STEEL-001",
-            "warehouse_code": "WH-MAIN-01"
+def _mock_sales_orders(product_code: str, daily_qty: int = 20, days: int = 10) -> list[dict]:
+    return [
+        {
+            "order_date": f"2026-10-{day:02d}",
+            "items": [
+                {
+                    "product_code": product_code,
+                    "quantity_ordered": daily_qty,
+                    "quantity_fulfilled": daily_qty,
+                }
+            ],
         }
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/api/orchestrate",
-            json=request_data
+        for day in range(1, days + 1)
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_forecast_agent_specific_item_shortage():
+    """Forecast agent computes baseline_ma7 and flags critical shortage when stock < 7 days of supply."""
+    base = settings.ERP_API_URL
+
+    respx.get(f"{base}/inventory/products/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "product_code": "RM-STEEL-001",
+                    "name": "Structural Steel Plate",
+                    "reorder_point": 100,
+                    "safety_stock": 50,
+                    "lead_time_days": 7,
+                }
+            ],
         )
-        
-        result = response.json()
-        
-        print(f"\n🆔 Decision ID: {result['decision_id']}")
-        print(f"⚠️  Overall Risk: {result['overall_risk_level'].upper()}")
-        print(f"🎯 Action Required: {result['action_required']}")
-        
-        print(f"\n🤖 Agents Executed:")
-        for agent_result in result['agent_results']:
-            print(f"  • {agent_result['agent_name']}: {agent_result['risk_level']} ({agent_result['execution_time_ms']:.2f}ms)")
-        
-        print(f"\n📝 Summary:")
-        print(f"  {result['summary']}")
-        
-        print(f"\n💡 Combined Recommendations:")
-        for i, action in enumerate(result['recommended_actions'][:5], 1):
-            print(f"  {i}. {action}")
-
-
-async def test_warehouse_forecast():
-    """Test warehouse-level forecast"""
-    print("\n" + "="*60)
-    print("Test 3: Warehouse Forecast")
-    print("="*60)
-    
-    request_data = {
-        "warehouse_code": "WH-MAIN-01",
-        "analysis_type": "warehouse_forecast"
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/api/agents/forecast",
-            json=request_data
+    )
+    respx.get(f"{base}/inventory/balances/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "product_code": "RM-STEEL-001",
+                    "warehouse_code": "WH-MAIN-01",
+                    "quantity_on_hand": 40,
+                    "quantity_available": 40,
+                    "quantity_reserved": 0,
+                }
+            ],
         )
-        
-        result = response.json()
-        
-        print(f"\n📊 Agent: {result['agent_name']}")
-        print(f"⚠️  Risk Level: {result['risk_level'].upper()}")
-        
-        findings = result['findings']
-        print(f"\n📦 Warehouse Forecast Summary:")
-        print(f"  • Total Products: {findings.get('total_products')}")
-        print(f"  • Critical Items: {findings.get('critical_items_count')}")
-        print(f"  • Low Supply Items: {findings.get('low_supply_items_count')}")
-        
-        if findings.get('critical_items'):
-            print(f"\n🔴 Critical Items:")
-            for item in findings['critical_items']:
-                print(f"  • {item['product']}: {item['days_of_supply']} days of supply")
-        
-        print(f"\n💡 Recommendations:")
-        for rec in result['recommendations']:
-            print(f"  • {rec}")
+    )
+    respx.get(f"{base}/sales/sales-orders/").mock(
+        return_value=httpx.Response(200, json=_mock_sales_orders("RM-STEEL-001", daily_qty=20, days=10))
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/forecast",
+            json={
+                "product_code": "RM-STEEL-001",
+                "warehouse_code": "WH-MAIN-01",
+                "analysis_type": "demand_forecast",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "Forecast Agent"
+    assert data["risk_level"] == "critical"
+    assert data["findings"]["forecast_method"] == "baseline_ma7"
+    assert data["findings"]["daily_avg"] == 20.0
+    assert data["findings"]["days_of_supply"] == 2.0
+    assert data["findings"]["recommended_order_quantity"] == 150
 
 
-async def main():
-    """Run all forecast tests"""
-    print("\n" + "="*60)
-    print("🛡️ AegisChain Forecast Agent Test Suite")
-    print("="*60)
-    
-    try:
-        await test_specific_item_forecast()
-        await test_warehouse_forecast()
-        await test_multi_agent_orchestration()
-        
-        print("\n" + "="*60)
-        print("✅ All forecast agent tests completed!")
-        print("="*60)
-    
-    except Exception as e:
-        print(f"\n❌ Test failed: {e}")
-        import traceback
-        traceback.print_exc()
+@pytest.mark.asyncio
+@respx.mock
+async def test_forecast_agent_warehouse_summary():
+    """Warehouse forecast identifies critical items based on baseline_ma7 velocity."""
+    base = settings.ERP_API_URL
 
+    respx.get(f"{base}/inventory/balances/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "product_code": "RM-STEEL-001",
+                    "warehouse_code": "WH-MAIN-01",
+                    "quantity_available": 30,
+                }
+            ],
+        )
+    )
+    respx.get(f"{base}/sales/sales-orders/").mock(
+        return_value=httpx.Response(200, json=_mock_sales_orders("RM-STEEL-001", daily_qty=10, days=10))
+    )
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/forecast",
+            json={
+                "warehouse_code": "WH-MAIN-01",
+                "analysis_type": "warehouse_forecast",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["risk_level"] == "critical"
+    assert data["findings"]["total_products"] == 1
+    assert data["findings"]["critical_items_count"] == 1
