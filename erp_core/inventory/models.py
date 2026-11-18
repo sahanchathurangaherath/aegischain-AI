@@ -1,4 +1,5 @@
-from django.db import models
+from django.db import models, transaction
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 import uuid
@@ -327,35 +328,54 @@ class InventoryScan(TimeStampedModel):
     def __str__(self):
         return f"{self.scan_type} - {self.product.product_code} x {self.quantity} @ {self.warehouse.warehouse_code}"
     
-    def process_scan(self):
+    def process_scan(self, destination_warehouse=None):
         """
-        Process this scan and update inventory balance
-        This will be called automatically or manually
+        Process this scan atomically and update inventory balance.
+        For TRANSFER scans, moves stock to `destination_warehouse` (or warehouse matching
+        `reference_number`), or into `quantity_in_transit` if no destination is provided.
         """
-        if self.is_processed:
-            return  # Already processed
-        
-        # Get or create inventory balance
-        balance, created = InventoryBalance.objects.get_or_create(
-            product=self.product,
-            warehouse=self.warehouse,
-            defaults={'quantity_on_hand': 0}
-        )
-        
-        # Update quantity based on scan type
-        if self.scan_type == 'IN':
-            balance.quantity_on_hand += self.quantity
-        elif self.scan_type == 'OUT':
-            balance.quantity_on_hand -= self.quantity
-        elif self.scan_type == 'AUDIT':
-            # Physical count - update variance
-            balance.update_variance(self.quantity)
-        elif self.scan_type == 'ADJUSTMENT':
-            balance.quantity_on_hand = self.quantity
-        
-        balance.save()
-        
-        # Mark as processed
-        self.is_processed = True
-        self.processed_at = timezone.now()
-        self.save()
+        with transaction.atomic():
+            if self.is_processed:
+                return
+
+            balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
+                product=self.product,
+                warehouse=self.warehouse,
+                defaults={'quantity_on_hand': 0}
+            )
+
+            if self.scan_type == 'IN':
+                balance.quantity_on_hand += self.quantity
+            elif self.scan_type == 'OUT':
+                if balance.quantity_available < self.quantity:
+                    raise ValidationError("Insufficient available stock for OUT scan")
+                balance.quantity_on_hand -= self.quantity
+            elif self.scan_type == 'TRANSFER':
+                if balance.quantity_available < self.quantity:
+                    raise ValidationError("Insufficient available stock for TRANSFER scan")
+                balance.quantity_on_hand -= self.quantity
+                target_wh = destination_warehouse
+                if target_wh is None and self.reference_number:
+                    target_wh = Warehouse.objects.filter(
+                        warehouse_code=self.reference_number
+                    ).first()
+                if target_wh is not None:
+                    dest_balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
+                        product=self.product,
+                        warehouse=target_wh,
+                        defaults={'quantity_on_hand': 0}
+                    )
+                    dest_balance.quantity_on_hand += self.quantity
+                    dest_balance.save()
+                else:
+                    balance.quantity_in_transit += self.quantity
+            elif self.scan_type == 'AUDIT':
+                balance.update_variance(self.quantity)
+            elif self.scan_type == 'ADJUSTMENT':
+                balance.quantity_on_hand = self.quantity
+
+            balance.save()
+
+            self.is_processed = True
+            self.processed_at = timezone.now()
+            self.save()
