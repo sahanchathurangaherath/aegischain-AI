@@ -70,6 +70,48 @@ class Product(TimeStampedModel, ActiveModel):
         default=7,
         help_text="Standard procurement lead time"
     )
+
+    # Supply Chain Unit Economics & Ordering Constraints
+    holding_cost_per_day = models.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        default=Decimal('0.0500'),
+        validators=[MinValueValidator(Decimal('0.0000'))],
+        help_text="Daily storage and capital holding cost per unit (USD)"
+    )
+    stockout_penalty_per_unit = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('5.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Estimated lost margin or penalty per unit short (USD)"
+    )
+    min_order_quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Minimum order quantity (MOQ)"
+    )
+    order_multiple = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Order quantity must be a multiple of this pack/pallet size"
+    )
+    max_stock_ceiling = models.PositiveIntegerField(
+        default=10000,
+        validators=[MinValueValidator(1)],
+        help_text="Hard guardrail ceiling for single-SKU stock orders"
+    )
+    demand_segment = models.CharField(
+        max_length=20,
+        choices=[
+            ('FAST', 'Fast Mover'),
+            ('SLOW', 'Slow Mover'),
+            ('INTERMITTENT', 'Intermittent'),
+            ('NEW', 'New Product'),
+        ],
+        default='FAST',
+        help_text="SKU demand segment for forecasting and backtesting"
+    )
     
     # Classification
     abc_classification = models.CharField(
