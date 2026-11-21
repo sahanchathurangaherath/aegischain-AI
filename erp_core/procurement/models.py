@@ -1,10 +1,10 @@
-from django.db import models
+from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 from django.utils import timezone
 from datetime import timedelta
-from core.models import TimeStampedModel, UUIDModel, ActiveModel
+from core.models import TimeStampedModel, UUIDModel, ActiveModel, OutboxEvent
 
 class Supplier(TimeStampedModel, ActiveModel):
     """
@@ -371,21 +371,33 @@ class Shipment(TimeStampedModel):
         return f"{self.shipment_number} - {self.purchase_order.po_number}"
     
     def update_delay(self):
-        """Calculate delay if shipment is late"""
-        if self.actual_arrival_date:
-            # Use actual arrival
-            delta = self.actual_arrival_date - self.expected_arrival_date
-            self.delay_days = max(0, delta.days)
-        elif self.status not in ['RECEIVED', 'CANCELLED']:
-            # Not yet received - check if overdue
-            today = timezone.now().date()
-            if today > self.expected_arrival_date:
-                delta = today - self.expected_arrival_date
-                self.delay_days = delta.days
-                if self.status != 'DELAYED':
-                    self.status = 'DELAYED'
-        
-        self.save()
+        """Calculate delay if shipment is late and emit ShipmentDelayed outbox event."""
+        with transaction.atomic():
+            if self.actual_arrival_date:
+                delta = self.actual_arrival_date - self.expected_arrival_date
+                self.delay_days = max(0, delta.days)
+            elif self.status not in ['RECEIVED', 'CANCELLED']:
+                today = timezone.now().date()
+                if today > self.expected_arrival_date:
+                    delta = today - self.expected_arrival_date
+                    self.delay_days = delta.days
+                    if self.status != 'DELAYED':
+                        self.status = 'DELAYED'
+
+            self.save()
+
+            if self.delay_days > 0:
+                OutboxEvent.objects.create(
+                    event_type='ShipmentDelayed',
+                    payload={
+                        'shipment_number': self.shipment_number,
+                        'po_number': self.purchase_order.po_number,
+                        'supplier_code': self.purchase_order.supplier.supplier_code,
+                        'warehouse_code': self.purchase_order.warehouse.warehouse_code,
+                        'delay_days': self.delay_days,
+                        'status': self.status,
+                    },
+                )
     
     @property
     def is_delayed(self):
@@ -478,3 +490,20 @@ class GoodsReceipt(TimeStampedModel):
         if total == 0:
             return 0.0
         return round((self.damaged_rejected_qty / total) * 100.0, 2)
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if is_new and self.damaged_rejected_qty > 0:
+                OutboxEvent.objects.create(
+                    event_type='SupplierQualityIncident',
+                    payload={
+                        'po_number': self.purchase_order.po_number,
+                        'supplier_code': self.purchase_order.supplier.supplier_code,
+                        'product_code': self.product.product_code,
+                        'received_qty': self.received_qty,
+                        'damaged_rejected_qty': self.damaged_rejected_qty,
+                        'defect_rate': self.defect_rate,
+                    },
+                )
