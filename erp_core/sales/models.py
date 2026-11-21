@@ -1,10 +1,10 @@
 
-from django.db import models
-from django.core.validators import MinValueValidator
 from decimal import Decimal
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
+from django.db import models, transaction
 from django.utils import timezone
 from core.models import TimeStampedModel
-from decimal import Decimal
 
 
 
@@ -119,6 +119,73 @@ class SalesOrder(TimeStampedModel):
             if not item.can_fulfill:
                 return False
         return True
+
+    def confirm_order(self):
+        """Confirm a DRAFT order and atomically reserve stock for all line items."""
+        from inventory.models import InventoryBalance
+
+        with transaction.atomic():
+            if self.status != 'DRAFT':
+                raise ValidationError(f"Only DRAFT orders can be confirmed (current: {self.status}).")
+
+            items = list(self.items.select_related('product').all())
+            if not items:
+                raise ValidationError("Cannot confirm a sales order with no line items.")
+
+            for item in items:
+                balance = InventoryBalance.objects.select_for_update().filter(
+                    product=item.product,
+                    warehouse=self.warehouse,
+                ).first()
+                if not balance or balance.quantity_available < item.quantity_pending:
+                    raise ValidationError(
+                        f"Insufficient available stock for {item.product.product_code} at {self.warehouse.warehouse_code}."
+                    )
+                balance.quantity_reserved += item.quantity_pending
+                balance.save()
+
+            self.status = 'CONFIRMED'
+            self.save(update_fields=['status', 'updated_at'])
+
+    def fulfill_order(self, scanned_by: str = 'system'):
+        """Ship a confirmed/packed order, deducting reserved and on-hand stock and logging OUT scans."""
+        from inventory.models import InventoryBalance, InventoryScan
+
+        with transaction.atomic():
+            if self.status not in ('CONFIRMED', 'PROCESSING', 'PACKED'):
+                raise ValidationError(f"Cannot fulfill order in '{self.status}' status.")
+
+            for item in self.items.select_related('product').all():
+                qty = item.quantity_pending
+                if qty <= 0:
+                    continue
+
+                balance = InventoryBalance.objects.select_for_update().get(
+                    product=item.product,
+                    warehouse=self.warehouse,
+                )
+                balance.quantity_reserved = max(0, balance.quantity_reserved - qty)
+                balance.quantity_on_hand -= qty
+                balance.save()
+
+                item.quantity_fulfilled = item.quantity_ordered
+                item.save(update_fields=['quantity_fulfilled', 'updated_at'])
+
+                InventoryScan.objects.create(
+                    product=item.product,
+                    warehouse=self.warehouse,
+                    scan_type='OUT',
+                    quantity=qty,
+                    scanned_by=scanned_by,
+                    reference_number=self.so_number,
+                    notes=f"Auto-recorded from fulfillment of {self.so_number}",
+                    is_processed=True,
+                    processed_at=timezone.now(),
+                )
+
+            self.status = 'SHIPPED'
+            self.shipped_date = timezone.now().date()
+            self.save(update_fields=['status', 'shipped_date', 'updated_at'])
 
 
 class SalesOrderItem(TimeStampedModel):
