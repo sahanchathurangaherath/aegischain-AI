@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.utils.html import format_html
+from unfold.admin import ModelAdmin, TabularInline
 from .models import SalesOrder, SalesOrderItem
 
 
-class SalesOrderItemInline(admin.TabularInline):
+class SalesOrderItemInline(TabularInline):
     """Inline for SO items"""
     model = SalesOrderItem
     extra = 1
@@ -12,7 +13,7 @@ class SalesOrderItemInline(admin.TabularInline):
 
 
 @admin.register(SalesOrder)
-class SalesOrderAdmin(admin.ModelAdmin):
+class SalesOrderAdmin(ModelAdmin):
     list_display = [
         'so_number',
         'customer_name',
@@ -101,7 +102,7 @@ class SalesOrderAdmin(admin.ModelAdmin):
 
 
 @admin.register(SalesOrderItem)
-class SalesOrderItemAdmin(admin.ModelAdmin):
+class SalesOrderItemAdmin(ModelAdmin):
     list_display = [
         'sales_order',
         'product',

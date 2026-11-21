@@ -1,10 +1,11 @@
 from django.contrib import admin
 from django.utils.html import format_html
+from unfold.admin import ModelAdmin
 from .models import Product, Warehouse, InventoryBalance, InventoryScan
 
 
 @admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
+class ProductAdmin(ModelAdmin):
     list_display = [
         'product_code', 
         'name', 
@@ -50,7 +51,7 @@ class ProductAdmin(admin.ModelAdmin):
 
 
 @admin.register(Warehouse)
-class WarehouseAdmin(admin.ModelAdmin):
+class WarehouseAdmin(ModelAdmin):
     list_display = [
         'warehouse_code',
         'name',
@@ -83,7 +84,7 @@ class WarehouseAdmin(admin.ModelAdmin):
 
 
 @admin.register(InventoryBalance)
-class InventoryBalanceAdmin(admin.ModelAdmin):
+class InventoryBalanceAdmin(ModelAdmin):
     list_display = [
         'product',
         'warehouse',
@@ -118,7 +119,7 @@ class InventoryBalanceAdmin(admin.ModelAdmin):
 
 
 @admin.register(InventoryScan)
-class InventoryScanAdmin(admin.ModelAdmin):
+class InventoryScanAdmin(ModelAdmin):
     list_display = [
         'scan_id',
         'product',
