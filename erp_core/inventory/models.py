@@ -49,6 +49,13 @@ class Product(TimeStampedModel, ActiveModel):
         decimal_places=2,
         validators=[MinValueValidator(Decimal('0.01'))]
     )
+    unit_volume_cbm = models.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        default=Decimal('0.0100'),
+        validators=[MinValueValidator(Decimal('0.0001'))],
+        help_text="Volume per unit in cubic meters (CBM)"
+    )
     
     # Inventory Parameters
     reorder_point = models.IntegerField(
@@ -154,10 +161,20 @@ class Warehouse(TimeStampedModel, ActiveModel):
         return f"{self.warehouse_code} - {self.name}"
     
     def update_utilization(self):
-        """Calculate and update current utilization"""
-        # This would be calculated based on actual inventory
-        # Placeholder for now
-        pass
+        """Calculate and update current utilization percentage based on stock volume."""
+        if not self.total_capacity or self.total_capacity <= 0:
+            self.current_utilization = Decimal('0.00')
+            self.save(update_fields=['current_utilization', 'updated_at'])
+            return self.current_utilization
+
+        used_volume = sum(
+            (Decimal(balance.quantity_on_hand) * balance.product.unit_volume_cbm)
+            for balance in self.inventory_balances.select_related('product').all()
+        )
+        utilization = (used_volume / Decimal(self.total_capacity)) * Decimal('100')
+        self.current_utilization = min(utilization, Decimal('100.00')).quantize(Decimal('0.01'))
+        self.save(update_fields=['current_utilization', 'updated_at'])
+        return self.current_utilization
 
 
 
