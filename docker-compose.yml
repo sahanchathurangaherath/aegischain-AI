@@ -69,6 +69,28 @@ services:
     networks:
       - aegischain_network
 
+  ai_worker:
+    build:
+      context: ./aegis_ai
+      dockerfile: ../docker/Dockerfile.ai
+    container_name: aegischain_ai_worker
+    profiles: ["core"]
+    command: ["python", "-m", "events.worker"]
+    env_file:
+      - .env
+    environment:
+      ERP_API_URL: http://erp:8000/api
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aegis_user}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-aegischain_db}
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      erp:
+        condition: service_healthy
+    networks:
+      - aegischain_network
+
 networks:
   aegischain_network:
     driver: bridge

@@ -1,4 +1,4 @@
-.PHONY: up up-all down test lint seed logs
+.PHONY: up up-all down test lint seed logs replay-dlq
 
 up:
 	docker compose --profile core up -d --build
@@ -22,3 +22,6 @@ seed:
 
 logs:
 	docker compose logs -f --tail=100
+
+replay-dlq:
+	docker compose exec erp python manage.py replay_dlq
