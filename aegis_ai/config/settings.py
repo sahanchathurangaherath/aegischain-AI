@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     OUTBOX_BATCH_SIZE: int = 10
     OUTBOX_MAX_ATTEMPTS: int = 5
 
+    # LLM Provider & Deliberation Harness
+    LLM_PROVIDER: str = "replay"  # gemini | ollama | replay
+    LLM_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_KEY: str = ""
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    MAX_DELIBERATION_STEPS: int = 6
+    MAX_DELIBERATION_WALL_S: float = 45.0
+    MAX_DELIBERATION_TOKENS: int = 12000
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+
     @model_validator(mode="after")
     def validate_required_secrets(self) -> "Settings":
         if not self.DEBUG and not self.ERP_API_TOKEN and "pytest" not in sys.modules:
