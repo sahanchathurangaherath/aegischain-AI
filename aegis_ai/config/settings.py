@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     AGENT_TIMEOUT: int = 30
     ENABLE_LOGGING: bool = True
 
+    # Outbox Worker & Escalation Routing
+    DATABASE_URL: str = ""
+    SYSTEM2_ENABLED: bool = False
+    ESCALATION_COOLDOWN_HOURS: int = 6
+    OUTBOX_POLL_INTERVAL_S: float = 1.0
+    OUTBOX_BATCH_SIZE: int = 10
+    OUTBOX_MAX_ATTEMPTS: int = 5
+
     @model_validator(mode="after")
     def validate_required_secrets(self) -> "Settings":
         if not self.DEBUG and not self.ERP_API_TOKEN and "pytest" not in sys.modules:
