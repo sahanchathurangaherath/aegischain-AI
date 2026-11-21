@@ -93,3 +93,55 @@ class Assessment(models.Model):
 
     def __str__(self):
         return f"{self.agent_name} [{self.risk_level}] ({self.event_id})"
+
+
+
+class Deliberation(models.Model):
+    """
+    System 2 deliberative reasoning record storing assembled context budgets,
+    tool calls, citations, prompt version, token counts, and estimated cost.
+    """
+
+    event_id = models.UUIDField(db_index=True)
+    trigger_reason = models.CharField(max_length=32)
+    prompt_version = models.CharField(max_length=32, db_index=True)
+    model_name = models.CharField(max_length=64)
+    assembled_context = models.JSONField(default=dict)
+    tool_calls = models.JSONField(default=list)
+    conclusion = models.TextField()
+    proposed_action = models.JSONField(null=True, blank=True)
+    citations = models.JSONField(default=list)
+    terminated_by = models.CharField(max_length=32, default='completed')
+    tokens_in = models.IntegerField(default=0)
+    tokens_out = models.IntegerField(default=0)
+    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, default=0)
+    latency_ms = models.FloatField(default=0.0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Deliberation [{self.trigger_reason}] {self.model_name} ({self.event_id})"
+
+
+class SupplierProfile(models.Model):
+    """
+    Entity memory for supplier performance, rebuilt periodically from
+    completed shipments and episodic assessment outcomes.
+    """
+
+    supplier_code = models.CharField(max_length=64, unique=True)
+    lead_time_p50 = models.FloatField(default=0.0)
+    lead_time_p90 = models.FloatField(default=0.0)
+    on_time_rate_90d = models.FloatField(default=100.0)
+    seasonal_notes = models.JSONField(default=dict)
+    incident_count_1y = models.IntegerField(default=0)
+    source_window = models.CharField(max_length=32, default='90d')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['supplier_code']
+
+    def __str__(self):
+        return f"SupplierProfile {self.supplier_code} (p50={self.lead_time_p50}d, p90={self.lead_time_p90}d)"
