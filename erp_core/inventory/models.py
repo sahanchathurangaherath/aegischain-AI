@@ -6,7 +6,7 @@ import uuid
 from django.utils import timezone
 
 
-from core.models import TimeStampedModel, ActiveModel
+from core.models import TimeStampedModel, ActiveModel, OutboxEvent
 
 
 class Product(TimeStampedModel, ActiveModel):
@@ -438,3 +438,31 @@ class InventoryScan(TimeStampedModel):
             self.is_processed = True
             self.processed_at = timezone.now()
             self.save()
+
+            # Emit InventoryMovementRecorded inside the same atomic transaction
+            OutboxEvent.objects.create(
+                event_type='InventoryMovementRecorded',
+                payload={
+                    'scan_id': str(self.scan_id),
+                    'scan_type': self.scan_type,
+                    'product_code': self.product.product_code,
+                    'warehouse_code': self.warehouse.warehouse_code,
+                    'quantity': self.quantity,
+                    'quantity_available': balance.quantity_available,
+                    'reorder_point': self.product.reorder_point,
+                    'reference_number': self.reference_number,
+                },
+            )
+
+            # Emit BalanceBelowReorderPoint if stock is now below reorder point
+            if balance.is_below_reorder_point:
+                OutboxEvent.objects.create(
+                    event_type='BalanceBelowReorderPoint',
+                    payload={
+                        'product_code': self.product.product_code,
+                        'warehouse_code': self.warehouse.warehouse_code,
+                        'quantity_available': balance.quantity_available,
+                        'reorder_point': self.product.reorder_point,
+                        'safety_stock': self.product.safety_stock,
+                    },
+                )
