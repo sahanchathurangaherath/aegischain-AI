@@ -400,3 +400,81 @@ class Shipment(TimeStampedModel):
             delta = end_date - self.shipped_date
             return delta.days
         return 0
+
+
+
+class SupplierProduct(TimeStampedModel):
+    """
+    Multi-sourcing catalog linking suppliers to products with supplier-specific
+    pricing, lead times, and minimum order quantities.
+    """
+
+    supplier = models.ForeignKey(
+        'Supplier',
+        on_delete=models.CASCADE,
+        related_name='supplied_products',
+    )
+    product = models.ForeignKey(
+        'inventory.Product',
+        on_delete=models.CASCADE,
+        related_name='supplier_options',
+    )
+    supplier_sku = models.CharField(max_length=64, blank=True)
+    unit_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    lead_time_days = models.PositiveIntegerField(default=14)
+    min_order_qty = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    is_primary = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ('supplier', 'product')
+        ordering = ['product', '-is_primary', 'unit_cost']
+        verbose_name = 'Supplier Product'
+        verbose_name_plural = 'Supplier Products'
+
+    def __str__(self):
+        role = 'Primary' if self.is_primary else 'Backup'
+        return f"{self.product.product_code} <- {self.supplier.supplier_code} ({role})"
+
+
+class GoodsReceipt(TimeStampedModel):
+    """
+    Goods Receipt Note (GRN) recording received vs. damaged/rejected quantities
+    for supplier quality tracking.
+    """
+
+    purchase_order = models.ForeignKey(
+        'PurchaseOrder',
+        on_delete=models.CASCADE,
+        related_name='goods_receipts',
+    )
+    product = models.ForeignKey(
+        'inventory.Product',
+        on_delete=models.PROTECT,
+        related_name='goods_receipts',
+    )
+    received_qty = models.PositiveIntegerField()
+    damaged_rejected_qty = models.PositiveIntegerField(default=0)
+    inspected_by = models.CharField(max_length=100, default='system')
+    inspection_notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Goods Receipt'
+        verbose_name_plural = 'Goods Receipts'
+
+    def __str__(self):
+        return f"GRN {self.purchase_order.po_number} - {self.product.product_code} (ok={self.received_qty}, rejected={self.damaged_rejected_qty})"
+
+    @property
+    def defect_rate(self) -> float:
+        total = self.received_qty + self.damaged_rejected_qty
+        if total == 0:
+            return 0.0
+        return round((self.damaged_rejected_qty / total) * 100.0, 2)
