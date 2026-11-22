@@ -1,0 +1,90 @@
+baseline:
+  min_tool_selection_accuracy: 0.85
+  min_citation_rate: 0.90
+
+scenarios:
+  - id: critical_stockout_single_supplier
+    trigger_reason: high_risk
+    event_payload:
+      event_type: BalanceBelowReorderPoint
+      product_code: RM-STEEL-001
+      warehouse_code: WH-MAIN-01
+    live_state:
+      product_code: RM-STEEL-001
+      quantity_available: 8
+      reorder_point: 100
+      safety_stock: 50
+      lead_time_days: 14
+    entity_memory:
+      supplier_code: SUP-001
+      lead_time_p50: 12
+      lead_time_p90: 18
+      on_time_rate_90d: 72.0
+    episodic_items:
+      - id: 101
+        risk_level: critical
+        outcome:
+          actual_stockout: true
+          qty_error: -45.0
+    semantic_chunks:
+      - document_id: 14
+        chunk_index: 2
+        source_uri: contracts/sup001_sla.pdf
+        chunk_text: "Minimum order quantity is 200 units. Expedited freight available for +12% fee."
+    expect:
+      tools_called: [get_inventory_balance, propose_purchase_order]
+      proposes_write: true
+      cites_minimum: 2
+
+  - id: healthy_stock_no_write
+    trigger_reason: human_query
+    event_payload:
+      event_type: InventoryMovementRecorded
+      product_code: PK-BOX-002
+      warehouse_code: WH-MAIN-01
+      human_query: true
+    live_state:
+      product_code: PK-BOX-002
+      quantity_available: 1200
+      reorder_point: 300
+      safety_stock: 150
+    entity_memory: {}
+    episodic_items:
+      - id: 102
+        risk_level: low
+        outcome:
+          actual_stockout: false
+    semantic_chunks: []
+    expect:
+      tools_called: [get_inventory_balance]
+      proposes_write: false
+      cites_minimum: 1
+
+  - id: supplier_delay_escalation
+    trigger_reason: high_risk
+    event_payload:
+      event_type: ShipmentDelayed
+      supplier_code: SUP-001
+      delay_days: 9
+    live_state:
+      supplier_code: SUP-001
+      delay_days: 9
+      open_pos: 2
+    entity_memory:
+      supplier_code: SUP-001
+      lead_time_p90: 21
+      incident_count_1y: 4
+    episodic_items:
+      - id: 103
+        risk_level: high
+        outcome:
+          actual_delay_days: 8
+    semantic_chunks:
+      - document_id: 19
+        chunk_index: 1
+        source_uri: sops/supplier_escalation.md
+        chunk_text: "When delay exceeds 7 days, trigger backup supplier qualification immediately."
+    expect:
+      tools_called: [get_supplier_risk]
+      proposes_write: false
+      cites_minimum: 2
