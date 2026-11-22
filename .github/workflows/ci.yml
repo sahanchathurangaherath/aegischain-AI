@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  erp-quality:
+    name: ERP Tests & Migration Check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: aegis_user
+          POSTGRES_DB: aegischain_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aegis_user -d aegischain_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: erp_core
+    env:
+      DEBUG: "True"
+      SECRET_KEY: "ci-test-secret-key"
+      DB_NAME: aegischain_test
+      DB_USER: aegis_user
+      DB_PASSWORD: test_password
+      DB_HOST: localhost
+      DB_PORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Install ERP dependencies
+        run: uv sync --all-extras
+      - name: Check for unmigrated model changes
+        run: uv run python manage.py makemigrations --check --dry-run
+      - name: Run ERP unit tests
+        run: uv run python manage.py test
+
+  ai-quality:
+    name: AI Unit Tests & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aegis_ai
+    env:
+      DEBUG: "True"
+      ERP_API_URL: "http://localhost:8000/api"
+      ERP_API_TOKEN: "ci-test-token"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Install AI dependencies
+        run: uv sync --all-extras
+      - name: Run AI unit tests with pytest
+        run: uv run pytest -v --cov=. --cov-report=term-missing
+
+  build-and-scan:
+    name: Docker Build & Trivy Security Scan
+    runs-on: ubuntu-latest
+    needs: [erp-quality, ai-quality]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ERP Docker image
+        run: docker build -t aegis-erp:ci -f docker/Dockerfile.erp erp_core
+      - name: Build AI Docker image
+        run: docker build -t aegis-ai:ci -f docker/Dockerfile.ai aegis_ai
+      - name: Run Trivy vulnerability scanner on AI image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: aegis-ai:ci
+          format: table
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          exit-code: "1"

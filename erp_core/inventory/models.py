@@ -1,11 +1,12 @@
-from django.db import models
+from django.db import models, transaction
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 import uuid
 from django.utils import timezone
 
 
-from core.models import TimeStampedModel, ActiveModel
+from core.models import TimeStampedModel, ActiveModel, OutboxEvent
 
 
 class Product(TimeStampedModel, ActiveModel):
@@ -48,6 +49,13 @@ class Product(TimeStampedModel, ActiveModel):
         decimal_places=2,
         validators=[MinValueValidator(Decimal('0.01'))]
     )
+    unit_volume_cbm = models.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        default=Decimal('0.0100'),
+        validators=[MinValueValidator(Decimal('0.0001'))],
+        help_text="Volume per unit in cubic meters (CBM)"
+    )
     
     # Inventory Parameters
     reorder_point = models.IntegerField(
@@ -61,6 +69,48 @@ class Product(TimeStampedModel, ActiveModel):
     lead_time_days = models.IntegerField(
         default=7,
         help_text="Standard procurement lead time"
+    )
+
+    # Supply Chain Unit Economics & Ordering Constraints
+    holding_cost_per_day = models.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        default=Decimal('0.0500'),
+        validators=[MinValueValidator(Decimal('0.0000'))],
+        help_text="Daily storage and capital holding cost per unit (USD)"
+    )
+    stockout_penalty_per_unit = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('5.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Estimated lost margin or penalty per unit short (USD)"
+    )
+    min_order_quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Minimum order quantity (MOQ)"
+    )
+    order_multiple = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Order quantity must be a multiple of this pack/pallet size"
+    )
+    max_stock_ceiling = models.PositiveIntegerField(
+        default=10000,
+        validators=[MinValueValidator(1)],
+        help_text="Hard guardrail ceiling for single-SKU stock orders"
+    )
+    demand_segment = models.CharField(
+        max_length=20,
+        choices=[
+            ('FAST', 'Fast Mover'),
+            ('SLOW', 'Slow Mover'),
+            ('INTERMITTENT', 'Intermittent'),
+            ('NEW', 'New Product'),
+        ],
+        default='FAST',
+        help_text="SKU demand segment for forecasting and backtesting"
     )
     
     # Classification
@@ -153,10 +203,20 @@ class Warehouse(TimeStampedModel, ActiveModel):
         return f"{self.warehouse_code} - {self.name}"
     
     def update_utilization(self):
-        """Calculate and update current utilization"""
-        # This would be calculated based on actual inventory
-        # Placeholder for now
-        pass
+        """Calculate and update current utilization percentage based on stock volume."""
+        if not self.total_capacity or self.total_capacity <= 0:
+            self.current_utilization = Decimal('0.00')
+            self.save(update_fields=['current_utilization', 'updated_at'])
+            return self.current_utilization
+
+        used_volume = sum(
+            (Decimal(balance.quantity_on_hand) * balance.product.unit_volume_cbm)
+            for balance in self.inventory_balances.select_related('product').all()
+        )
+        utilization = (used_volume / Decimal(self.total_capacity)) * Decimal('100')
+        self.current_utilization = min(utilization, Decimal('100.00')).quantize(Decimal('0.01'))
+        self.save(update_fields=['current_utilization', 'updated_at'])
+        return self.current_utilization
 
 
 
@@ -327,35 +387,82 @@ class InventoryScan(TimeStampedModel):
     def __str__(self):
         return f"{self.scan_type} - {self.product.product_code} x {self.quantity} @ {self.warehouse.warehouse_code}"
     
-    def process_scan(self):
+    def process_scan(self, destination_warehouse=None):
         """
-        Process this scan and update inventory balance
-        This will be called automatically or manually
+        Process this scan atomically and update inventory balance.
+        For TRANSFER scans, moves stock to `destination_warehouse` (or warehouse matching
+        `reference_number`), or into `quantity_in_transit` if no destination is provided.
         """
-        if self.is_processed:
-            return  # Already processed
-        
-        # Get or create inventory balance
-        balance, created = InventoryBalance.objects.get_or_create(
-            product=self.product,
-            warehouse=self.warehouse,
-            defaults={'quantity_on_hand': 0}
-        )
-        
-        # Update quantity based on scan type
-        if self.scan_type == 'IN':
-            balance.quantity_on_hand += self.quantity
-        elif self.scan_type == 'OUT':
-            balance.quantity_on_hand -= self.quantity
-        elif self.scan_type == 'AUDIT':
-            # Physical count - update variance
-            balance.update_variance(self.quantity)
-        elif self.scan_type == 'ADJUSTMENT':
-            balance.quantity_on_hand = self.quantity
-        
-        balance.save()
-        
-        # Mark as processed
-        self.is_processed = True
-        self.processed_at = timezone.now()
-        self.save()
+        with transaction.atomic():
+            if self.is_processed:
+                return
+
+            balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
+                product=self.product,
+                warehouse=self.warehouse,
+                defaults={'quantity_on_hand': 0}
+            )
+
+            if self.scan_type == 'IN':
+                balance.quantity_on_hand += self.quantity
+            elif self.scan_type == 'OUT':
+                if balance.quantity_available < self.quantity:
+                    raise ValidationError("Insufficient available stock for OUT scan")
+                balance.quantity_on_hand -= self.quantity
+            elif self.scan_type == 'TRANSFER':
+                if balance.quantity_available < self.quantity:
+                    raise ValidationError("Insufficient available stock for TRANSFER scan")
+                balance.quantity_on_hand -= self.quantity
+                target_wh = destination_warehouse
+                if target_wh is None and self.reference_number:
+                    target_wh = Warehouse.objects.filter(
+                        warehouse_code=self.reference_number
+                    ).first()
+                if target_wh is not None:
+                    dest_balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
+                        product=self.product,
+                        warehouse=target_wh,
+                        defaults={'quantity_on_hand': 0}
+                    )
+                    dest_balance.quantity_on_hand += self.quantity
+                    dest_balance.save()
+                else:
+                    balance.quantity_in_transit += self.quantity
+            elif self.scan_type == 'AUDIT':
+                balance.update_variance(self.quantity)
+            elif self.scan_type == 'ADJUSTMENT':
+                balance.quantity_on_hand = self.quantity
+
+            balance.save()
+
+            self.is_processed = True
+            self.processed_at = timezone.now()
+            self.save()
+
+            # Emit InventoryMovementRecorded inside the same atomic transaction
+            OutboxEvent.objects.create(
+                event_type='InventoryMovementRecorded',
+                payload={
+                    'scan_id': str(self.scan_id),
+                    'scan_type': self.scan_type,
+                    'product_code': self.product.product_code,
+                    'warehouse_code': self.warehouse.warehouse_code,
+                    'quantity': self.quantity,
+                    'quantity_available': balance.quantity_available,
+                    'reorder_point': self.product.reorder_point,
+                    'reference_number': self.reference_number,
+                },
+            )
+
+            # Emit BalanceBelowReorderPoint if stock is now below reorder point
+            if balance.is_below_reorder_point:
+                OutboxEvent.objects.create(
+                    event_type='BalanceBelowReorderPoint',
+                    payload={
+                        'product_code': self.product.product_code,
+                        'warehouse_code': self.warehouse.warehouse_code,
+                        'quantity_available': balance.quantity_available,
+                        'reorder_point': self.product.reorder_point,
+                        'safety_stock': self.product.safety_stock,
+                    },
+                )

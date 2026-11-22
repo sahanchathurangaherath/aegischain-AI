@@ -91,7 +91,8 @@ class ForecastAgent(BaseAgent):
             )
             
             # Calculate forecast
-            forecast = self._calculate_forecast(sales_history)
+            forecast = self.baseline_ma7(sales_history)
+           
             
             # Assess shortage risk
             shortage_assessment = self._assess_shortage_risk(
@@ -163,8 +164,8 @@ class ForecastAgent(BaseAgent):
             sales_history = await self._get_sales_history(product_code, days=90)
             
             # Calculate forecast
-            forecast = self._calculate_forecast(sales_history)
-            
+            forecast = self.baseline_ma7(sales_history)
+
             # Calculate total stock
             total_stock = sum(b["quantity_available"] for b in balances)
             
@@ -239,7 +240,7 @@ class ForecastAgent(BaseAgent):
                 )
                 
                 # Calculate forecast
-                forecast = self._calculate_forecast(sales_history)
+                forecast = self.baseline_ma7(sales_history)
                 
                 # Calculate days of supply
                 days_of_supply = balance["quantity_available"] / forecast["daily_avg"] if forecast["daily_avg"] > 0 else 999
@@ -385,15 +386,9 @@ class ForecastAgent(BaseAgent):
         
         return sales_items
     
-    def _calculate_forecast(self, sales_history: List[Dict]) -> Dict[str, Any]:
+    def baseline_ma7(self, sales_history: List[Dict]) -> Dict[str, Any]:
         """
-        Calculate demand forecast using simple time-series analysis
-        
-        In production, you might use:
-        - ARIMA models
-        - Prophet (Facebook's forecasting library)
-        - Machine learning models
-        - Seasonal decomposition
+        Calculate 7-day moving average demand baseline (baseline_ma7).
         """
         
         if not sales_history or len(sales_history) < 7:
@@ -469,7 +464,7 @@ class ForecastAgent(BaseAgent):
             "recent_7day_avg": round(recent_avg, 2),
             "trend": trend,
             "confidence": confidence,
-            "forecast_method": "moving_average",
+            "forecast_method": "baseline_ma7",
             "variability": round(std_dev, 2),
             "data_points": len(quantities)
         }

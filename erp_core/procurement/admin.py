@@ -1,12 +1,13 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Sum
+from unfold.admin import ModelAdmin, TabularInline
 from .models import Supplier, PurchaseOrder, PurchaseOrderItem, Shipment
 
 
 
 @admin.register(Supplier)
-class SupplierAdmin(admin.ModelAdmin):
+class SupplierAdmin(ModelAdmin):
     list_display = [
         'supplier_code',
         'name',
@@ -61,7 +62,7 @@ class SupplierAdmin(admin.ModelAdmin):
     
     risk_indicator.short_description = 'Risk'
 
-class PurchaseOrderItemInline(admin.TabularInline):
+class PurchaseOrderItemInline(TabularInline):
     """Inline for PO items"""
     model = PurchaseOrderItem
     extra = 1
@@ -70,7 +71,7 @@ class PurchaseOrderItemInline(admin.TabularInline):
 
 
 @admin.register(PurchaseOrder)
-class PurchaseOrderAdmin(admin.ModelAdmin):
+class PurchaseOrderAdmin(ModelAdmin):
     list_display = [
         'po_number',
         'supplier',
@@ -144,7 +145,7 @@ class PurchaseOrderAdmin(admin.ModelAdmin):
 
 
 @admin.register(PurchaseOrderItem)
-class PurchaseOrderItemAdmin(admin.ModelAdmin):
+class PurchaseOrderItemAdmin(ModelAdmin):
     list_display = [
         'purchase_order',
         'product',
@@ -171,7 +172,7 @@ class PurchaseOrderItemAdmin(admin.ModelAdmin):
 
 
 @admin.register(Shipment)
-class ShipmentAdmin(admin.ModelAdmin):
+class ShipmentAdmin(ModelAdmin):
     list_display = [
         'shipment_number',
         'purchase_order',

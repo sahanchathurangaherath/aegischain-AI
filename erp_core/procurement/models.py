@@ -1,9 +1,10 @@
-from django.db import models
+from django.db import models, transaction
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 from django.utils import timezone
 from datetime import timedelta
-from core.models import TimeStampedModel, UUIDModel, ActiveModel
+from core.models import TimeStampedModel, UUIDModel, ActiveModel, OutboxEvent
 
 class Supplier(TimeStampedModel, ActiveModel):
     """
@@ -103,9 +104,21 @@ class Supplier(TimeStampedModel, ActiveModel):
         return f"{self.supplier_code} - {self.name}"
     
     def update_reliability_score(self):
-        """Calculate reliability based on historical performance"""
-        # This will be implemented when we have shipment data
-        pass
+        """Calculate reliability based on historical shipment performance."""
+        received_shipments = Shipment.objects.filter(
+            purchase_order__supplier=self,
+            status='RECEIVED',
+        )
+        total = received_shipments.count()
+        if total == 0:
+            return
+        on_time = received_shipments.filter(delay_days__lte=0).count()
+        self.on_time_delivery_rate = round((on_time / total) * 100.0, 2)
+        quality_component = (self.quality_rating / 5.0) * 100.0
+        self.reliability_score = round(
+            0.7 * self.on_time_delivery_rate + 0.3 * quality_component, 2
+        )
+        self.save(update_fields=['on_time_delivery_rate', 'reliability_score', 'updated_at'])
 
 
 class PurchaseOrder(TimeStampedModel):
@@ -123,6 +136,16 @@ class PurchaseOrder(TimeStampedModel):
         ('RECEIVED', 'Fully Received'),
         ('CANCELLED', 'Cancelled'),
     ]
+
+    VALID_TRANSITIONS = {
+        'DRAFT': {'SUBMITTED', 'CANCELLED'},
+        'SUBMITTED': {'CONFIRMED', 'CANCELLED'},
+        'CONFIRMED': {'SHIPPED', 'CANCELLED'},
+        'SHIPPED': {'PARTIALLY_RECEIVED', 'RECEIVED'},
+        'PARTIALLY_RECEIVED': {'RECEIVED'},
+        'RECEIVED': set(),
+        'CANCELLED': set(),
+    }
     
     # Header Information
     po_number = models.CharField(
@@ -192,6 +215,18 @@ class PurchaseOrder(TimeStampedModel):
         self.tax_amount = self.subtotal * Decimal('0.10')  # 10% tax
         self.total_amount = self.subtotal + self.tax_amount
         self.save()
+
+    def transition_to(self, new_status: str) -> None:
+        """Transition PO to a new status, rejecting invalid state transitions."""
+        allowed = self.VALID_TRANSITIONS.get(self.status, set())
+        if new_status not in allowed:
+            raise ValidationError(
+                f"Invalid purchase order transition from '{self.status}' to '{new_status}'."
+            )
+        self.status = new_status
+        if new_status == 'RECEIVED' and not self.actual_delivery_date:
+            self.actual_delivery_date = timezone.now().date()
+        self.save(update_fields=['status', 'actual_delivery_date', 'updated_at'])
     
     @property
     def is_overdue(self):
@@ -336,21 +371,33 @@ class Shipment(TimeStampedModel):
         return f"{self.shipment_number} - {self.purchase_order.po_number}"
     
     def update_delay(self):
-        """Calculate delay if shipment is late"""
-        if self.actual_arrival_date:
-            # Use actual arrival
-            delta = self.actual_arrival_date - self.expected_arrival_date
-            self.delay_days = max(0, delta.days)
-        elif self.status not in ['RECEIVED', 'CANCELLED']:
-            # Not yet received - check if overdue
-            today = timezone.now().date()
-            if today > self.expected_arrival_date:
-                delta = today - self.expected_arrival_date
-                self.delay_days = delta.days
-                if self.status != 'DELAYED':
-                    self.status = 'DELAYED'
-        
-        self.save()
+        """Calculate delay if shipment is late and emit ShipmentDelayed outbox event."""
+        with transaction.atomic():
+            if self.actual_arrival_date:
+                delta = self.actual_arrival_date - self.expected_arrival_date
+                self.delay_days = max(0, delta.days)
+            elif self.status not in ['RECEIVED', 'CANCELLED']:
+                today = timezone.now().date()
+                if today > self.expected_arrival_date:
+                    delta = today - self.expected_arrival_date
+                    self.delay_days = delta.days
+                    if self.status != 'DELAYED':
+                        self.status = 'DELAYED'
+
+            self.save()
+
+            if self.delay_days > 0:
+                OutboxEvent.objects.create(
+                    event_type='ShipmentDelayed',
+                    payload={
+                        'shipment_number': self.shipment_number,
+                        'po_number': self.purchase_order.po_number,
+                        'supplier_code': self.purchase_order.supplier.supplier_code,
+                        'warehouse_code': self.purchase_order.warehouse.warehouse_code,
+                        'delay_days': self.delay_days,
+                        'status': self.status,
+                    },
+                )
     
     @property
     def is_delayed(self):
@@ -365,3 +412,98 @@ class Shipment(TimeStampedModel):
             delta = end_date - self.shipped_date
             return delta.days
         return 0
+
+
+
+class SupplierProduct(TimeStampedModel):
+    """
+    Multi-sourcing catalog linking suppliers to products with supplier-specific
+    pricing, lead times, and minimum order quantities.
+    """
+
+    supplier = models.ForeignKey(
+        'Supplier',
+        on_delete=models.CASCADE,
+        related_name='supplied_products',
+    )
+    product = models.ForeignKey(
+        'inventory.Product',
+        on_delete=models.CASCADE,
+        related_name='supplier_options',
+    )
+    supplier_sku = models.CharField(max_length=64, blank=True)
+    unit_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    lead_time_days = models.PositiveIntegerField(default=14)
+    min_order_qty = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    is_primary = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ('supplier', 'product')
+        ordering = ['product', '-is_primary', 'unit_cost']
+        verbose_name = 'Supplier Product'
+        verbose_name_plural = 'Supplier Products'
+
+    def __str__(self):
+        role = 'Primary' if self.is_primary else 'Backup'
+        return f"{self.product.product_code} <- {self.supplier.supplier_code} ({role})"
+
+
+class GoodsReceipt(TimeStampedModel):
+    """
+    Goods Receipt Note (GRN) recording received vs. damaged/rejected quantities
+    for supplier quality tracking.
+    """
+
+    purchase_order = models.ForeignKey(
+        'PurchaseOrder',
+        on_delete=models.CASCADE,
+        related_name='goods_receipts',
+    )
+    product = models.ForeignKey(
+        'inventory.Product',
+        on_delete=models.PROTECT,
+        related_name='goods_receipts',
+    )
+    received_qty = models.PositiveIntegerField()
+    damaged_rejected_qty = models.PositiveIntegerField(default=0)
+    inspected_by = models.CharField(max_length=100, default='system')
+    inspection_notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Goods Receipt'
+        verbose_name_plural = 'Goods Receipts'
+
+    def __str__(self):
+        return f"GRN {self.purchase_order.po_number} - {self.product.product_code} (ok={self.received_qty}, rejected={self.damaged_rejected_qty})"
+
+    @property
+    def defect_rate(self) -> float:
+        total = self.received_qty + self.damaged_rejected_qty
+        if total == 0:
+            return 0.0
+        return round((self.damaged_rejected_qty / total) * 100.0, 2)
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if is_new and self.damaged_rejected_qty > 0:
+                OutboxEvent.objects.create(
+                    event_type='SupplierQualityIncident',
+                    payload={
+                        'po_number': self.purchase_order.po_number,
+                        'supplier_code': self.purchase_order.supplier.supplier_code,
+                        'product_code': self.product.product_code,
+                        'received_qty': self.received_qty,
+                        'damaged_rejected_qty': self.damaged_rejected_qty,
+                        'defect_rate': self.defect_rate,
+                    },
+                )

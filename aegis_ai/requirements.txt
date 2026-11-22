@@ -5,4 +5,4 @@ pydantic-settings
 httpx
 python-dotenv
 python-multipart
-asyncio
+structlog
