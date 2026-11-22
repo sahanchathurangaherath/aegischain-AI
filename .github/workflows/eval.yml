@@ -1,0 +1,61 @@
+name: System 2 Eval Gate
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "aegis_ai/**"
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      live_provider:
+        description: "Run live LLM evaluation against Gemini"
+        type: boolean
+        default: false
+
+jobs:
+  replay-eval-gate:
+    name: Deterministic Replay Eval Gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aegis_ai
+    env:
+      DEBUG: "True"
+      LLM_PROVIDER: "replay"
+      ERP_API_URL: "http://localhost:8000/api"
+      ERP_API_TOKEN: "ci-eval-token"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --all-extras
+      - name: Run System 2 replay eval gate
+        run: uv run python tests/evals/runner.py
+
+  live-gemini-eval:
+    name: Live Gemini Eval Suite
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.live_provider == true)
+    defaults:
+      run:
+        working-directory: aegis_ai
+    env:
+      DEBUG: "True"
+      LLM_PROVIDER: "gemini"
+      LLM_MODEL: "gemini-2.5-flash"
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ERP_API_URL: "http://localhost:8000/api"
+      ERP_API_TOKEN: "ci-eval-token"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --all-extras
+      - name: Run live Gemini evaluation suite
+        run: uv run python tests/evals/runner.py --live
