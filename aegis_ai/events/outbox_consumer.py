@@ -70,9 +70,9 @@ WHERE id = %s
 
 QUEUE_HEALTH_SQL = """
 SELECT
-    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) FILTER (
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (
         WHERE processed_at IS NULL AND dead_letter = FALSE
-    ), 0) AS lag_seconds,
+    ))), 0) AS lag_seconds,
     COUNT(*) FILTER (WHERE dead_letter = TRUE) AS dlq_count
 FROM core_outboxevent
 """

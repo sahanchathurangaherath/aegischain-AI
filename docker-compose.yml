@@ -80,7 +80,7 @@ services:
       - .env
     environment:
       ERP_API_URL: http://erp:8000/api
-      DATABASE_URL: postgresql://${POSTGRES_USER:-aegis_user}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-aegischain_db}
+      DATABASE_URL: "host=postgres port=5432 dbname=${POSTGRES_DB:-aegischain_db} user=${POSTGRES_USER:-aegis_user} password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
     ports:
       - "8002:8002"
     depends_on:

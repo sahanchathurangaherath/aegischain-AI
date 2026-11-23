@@ -1,5 +1,6 @@
 import asyncio
 import signal
+import sys
 from prometheus_client import start_http_server
 import structlog
 
@@ -44,4 +45,7 @@ async def run_worker() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_worker())
+    if sys.platform == "win32":
+        asyncio.run(run_worker(), loop_factory=asyncio.SelectorEventLoop)
+    else:
+        asyncio.run(run_worker())

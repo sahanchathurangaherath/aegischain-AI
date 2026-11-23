@@ -45,6 +45,32 @@ class LLMProvider(Protocol):
     ) -> LLMResponse: ...
 
 
+def _sanitize_gemini_schema(schema: Any) -> Any:
+    """Convert Pydantic JSON Schema to a dict accepted by google-genai <=1.20 types.Schema."""
+    if not isinstance(schema, dict):
+        return schema
+
+    cleaned: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "exclusiveMinimum":
+            if "minimum" not in schema:
+                cleaned["minimum"] = value + 1 if schema.get("type") == "integer" else value
+            continue
+        if key == "exclusiveMaximum":
+            if "maximum" not in schema:
+                cleaned["maximum"] = value - 1 if schema.get("type") == "integer" else value
+            continue
+        if key == "properties" and isinstance(value, dict):
+            cleaned[key] = {k: _sanitize_gemini_schema(v) for k, v in value.items()}
+        elif key == "items":
+            cleaned[key] = _sanitize_gemini_schema(value)
+        elif key in ("anyOf", "any_of") and isinstance(value, list):
+            cleaned[key] = [_sanitize_gemini_schema(item) for item in value]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
 class GeminiProvider:
     """Google Gemini provider backed by the official `google-genai` SDK."""
 
@@ -80,11 +106,16 @@ class GeminiProvider:
 
         gemini_tools = None
         if tools:
+            use_json_schema = "parameters_json_schema" in types.FunctionDeclaration.model_fields
             declarations = [
                 types.FunctionDeclaration(
                     name=t["name"],
                     description=t["description"],
-                    parameters_json_schema=t["parameters"],
+                    **(
+                        {"parameters_json_schema": t["parameters"]}
+                        if use_json_schema
+                        else {"parameters": _sanitize_gemini_schema(t["parameters"])}
+                    ),
                 )
                 for t in tools
             ]

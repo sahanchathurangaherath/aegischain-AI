@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # LLM Provider & Deliberation Harness
     LLM_PROVIDER: str = "replay"  # gemini | ollama | replay
-    LLM_MODEL: str = "gemini-2.5-flash"
+    LLM_MODEL: str = "gemini-3.8-flash"
     GEMINI_API_KEY: str = ""
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     MAX_DELIBERATION_STEPS: int = 6
