@@ -171,10 +171,13 @@ class ForecastAgent(BaseAgent):
             
             # Assess shortage risk
             shortage_assessment = {
+                "assessment_status": "insufficient_data" if forecast["daily_avg"] <= 0 else "ok",
                 "current_stock": total_stock,
                 "predicted_demand": forecast["total_demand"],
                 "daily_avg_demand": forecast["daily_avg"],
-                "days_of_supply": total_stock / forecast["daily_avg"] if forecast["daily_avg"] > 0 else 999,
+                "days_of_supply": (
+                    total_stock / forecast["daily_avg"] if forecast["daily_avg"] > 0 else None
+                ),
                 "trend": forecast["trend"]
             }
             
@@ -243,8 +246,15 @@ class ForecastAgent(BaseAgent):
                 forecast = self.baseline_ma7(sales_history)
                 
                 # Calculate days of supply
-                days_of_supply = balance["quantity_available"] / forecast["daily_avg"] if forecast["daily_avg"] > 0 else 999
+                days_of_supply = (
+                    balance["quantity_available"] / forecast["daily_avg"]
+                    if forecast["daily_avg"] > 0
+                    else None
+                )
                 
+                if days_of_supply is None:
+                    continue
+
                 # Categorize
                 if days_of_supply < self.critical_days_threshold:
                     critical_items.append({
@@ -479,9 +489,20 @@ class ForecastAgent(BaseAgent):
         
         current_stock = balance["quantity_available"]
         daily_demand = forecast["daily_avg"]
-        
+        lead_time_days = product.get("lead_time_days", 7)
+
+        if daily_demand <= 0:
+            return {
+                "assessment_status": "insufficient_data",
+                "days_of_supply": None,
+                "shortage_date": None,
+                "shortage_risk": "unknown",
+                "recommended_order_quantity": 0,
+                "lead_time_days": lead_time_days
+            }
+
         # Calculate days of supply
-        days_of_supply = current_stock / daily_demand if daily_demand > 0 else 999
+        days_of_supply = current_stock / daily_demand
         
         # Calculate when shortage will occur
         shortage_date = None
@@ -512,7 +533,10 @@ class ForecastAgent(BaseAgent):
     def _determine_risk_level(self, shortage_assessment: Dict) -> RiskLevel:
         """Determine risk level from shortage assessment"""
         
-        days_of_supply = shortage_assessment.get("days_of_supply", 999)
+        days_of_supply = shortage_assessment.get("days_of_supply")
+        if days_of_supply is None or shortage_assessment.get("assessment_status") == "insufficient_data":
+            return RiskLevel.UNKNOWN
+
         trend = shortage_assessment.get("trend", "stable")
         
         # Critical: will run out in less than critical threshold
@@ -539,7 +563,10 @@ class ForecastAgent(BaseAgent):
         
         recommendations = []
         
-        days_of_supply = shortage_assessment.get("days_of_supply", 999)
+        days_of_supply = shortage_assessment.get("days_of_supply")
+        if days_of_supply is None:
+            return ["Insufficient sales history to forecast demand; manual review required."]
+
         shortage_date = shortage_assessment.get("shortage_date")
         recommended_qty = shortage_assessment.get("recommended_order_quantity", 0)
         trend = shortage_assessment.get("trend", "stable")
@@ -600,7 +627,9 @@ class ForecastAgent(BaseAgent):
         """Generate product-level recommendations"""
         
         recommendations = []
-        days_of_supply = shortage_assessment.get("days_of_supply", 999)
+        days_of_supply = shortage_assessment.get("days_of_supply")
+        if days_of_supply is None:
+            return ["Insufficient sales history across warehouses; manual review required."]
         
         if days_of_supply < self.critical_days_threshold:
             recommendations.append(
