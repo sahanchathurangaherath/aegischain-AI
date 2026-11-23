@@ -1,6 +1,8 @@
-from django.db import models
-from django.utils import timezone
+from decimal import Decimal
 import uuid
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
+from django.utils import timezone
 
 
 class TimeStampedModel(models.Model):
@@ -145,3 +147,191 @@ class SupplierProfile(models.Model):
 
     def __str__(self):
         return f"SupplierProfile {self.supplier_code} (p50={self.lead_time_p50}d, p90={self.lead_time_p90}d)"
+
+
+
+class AuditEvent(models.Model):
+    """
+    Append-only security and governance audit log. In production Postgres,
+    UPDATE and DELETE are revoked at the database role level.
+    """
+
+    event_type = models.CharField(max_length=64, db_index=True)
+    actor = models.CharField(max_length=128)
+    deliberation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"[{self.event_type}] by {self.actor} @ {self.created_at}"
+
+
+class ApprovalRequest(TimeStampedModel):
+    """
+    Human-in-the-Loop (HITL) action gate for AI-proposed procurement writes.
+    Enforces idempotency, dual-approval thresholds, and captures human overrides
+    (`ai_recommended_qty` vs `final_approved_qty`) for downstream evaluation.
+    """
+
+    ALLOWED_ACTIONS = {'CREATE_PO', 'CREATE_TRANSFER'}
+
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending Review'),
+        ('APPROVED', 'Approved As-Is'),
+        ('MODIFIED', 'Approved With Modification'),
+        ('REJECTED', 'Rejected'),
+        ('EXPIRED', 'Expired'),
+    ]
+
+    REVERSIBILITY_CHOICES = [
+        ('reversible', 'Reversible'),
+        ('irreversible', 'Irreversible'),
+    ]
+
+    idempotency_key = models.CharField(max_length=128, unique=True)
+    action_type = models.CharField(max_length=64)
+    deliberation_id = models.UUIDField(db_index=True)
+    product = models.ForeignKey('inventory.Product', on_delete=models.PROTECT)
+    warehouse = models.ForeignKey('inventory.Warehouse', on_delete=models.PROTECT)
+    supplier = models.ForeignKey(
+        'procurement.Supplier',
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+
+    ai_recommended_qty = models.PositiveIntegerField()
+    final_approved_qty = models.PositiveIntegerField(null=True, blank=True)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    value_usd = models.DecimalField(max_digits=12, decimal_places=2)
+    reversibility = models.CharField(
+        max_length=16,
+        choices=REVERSIBILITY_CHOICES,
+        default='reversible',
+    )
+
+    override_reason = models.CharField(max_length=64, blank=True)
+    override_notes = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='PENDING')
+    approvers = models.JSONField(default=list)
+    resulting_po = models.ForeignKey(
+        'procurement.PurchaseOrder',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Approval [{self.status}] {self.action_type} x{self.ai_recommended_qty} (${self.value_usd})"
+
+    def decide(
+        self,
+        *,
+        approver_id: str,
+        decision: str,
+        final_qty: int | None = None,
+        override_reason: str = '',
+        override_notes: str = '',
+        dual_approval_threshold: Decimal = Decimal('10000.00'),
+        dry_run: bool = False,
+    ) -> 'ApprovalRequest':
+        """Record a human approval/modification/rejection atomically."""
+        from datetime import timedelta
+        from procurement.models import PurchaseOrder, PurchaseOrderItem
+
+        if self.action_type not in self.ALLOWED_ACTIONS:
+            raise ValidationError(f"Action '{self.action_type}' is not in ALLOWED_ACTIONS.")
+
+        with transaction.atomic():
+            req = ApprovalRequest.objects.select_for_update().get(pk=self.pk)
+            if req.status != 'PENDING':
+                raise ValidationError(f"ApprovalRequest is already finalized ({req.status}).")
+
+            if decision == 'REJECTED':
+                req.status = 'REJECTED'
+                req.override_reason = override_reason
+                req.override_notes = override_notes
+                req.approvers = list(dict.fromkeys([*req.approvers, approver_id]))
+                req.save()
+                AuditEvent.objects.create(
+                    event_type='APPROVAL_REJECTED',
+                    actor=approver_id,
+                    deliberation_id=req.deliberation_id,
+                    payload={'approval_id': req.pk, 'reason': override_reason},
+                )
+                return req
+
+            if decision not in ('APPROVED', 'MODIFIED'):
+                raise ValidationError(f"Invalid decision: {decision}")
+
+            if decision == 'MODIFIED':
+                if not final_qty or final_qty <= 0:
+                    raise ValidationError("final_qty > 0 is required for MODIFIED decision.")
+                if not override_reason:
+                    raise ValidationError("override_reason is required when modifying AI quantity.")
+                req.final_approved_qty = final_qty
+                req.override_reason = override_reason
+                req.override_notes = override_notes
+            else:
+                req.final_approved_qty = req.ai_recommended_qty
+
+            if approver_id not in req.approvers:
+                req.approvers = [*req.approvers, approver_id]
+
+            if req.value_usd >= dual_approval_threshold and len(req.approvers) < 2:
+                req.save(
+                    update_fields=[
+                        'approvers',
+                        'final_approved_qty',
+                        'override_reason',
+                        'override_notes',
+                        'updated_at',
+                    ]
+                )
+                AuditEvent.objects.create(
+                    event_type='APPROVAL_FIRST_SIGNATURE',
+                    actor=approver_id,
+                    deliberation_id=req.deliberation_id,
+                    payload={'approval_id': req.pk, 'value_usd': str(req.value_usd)},
+                )
+                return req
+
+            req.status = decision
+            if not dry_run and req.action_type == 'CREATE_PO' and req.supplier_id:
+                po = PurchaseOrder.objects.create(
+                    po_number=f"PO-AI-{req.pk}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
+                    supplier=req.supplier,
+                    warehouse=req.warehouse,
+                    expected_delivery_date=timezone.now().date() + timedelta(days=req.supplier.lead_time_days),
+                    status='DRAFT',
+                    created_by=approver_id,
+                    notes=f"Generated from ApprovalRequest #{req.pk} (deliberation {req.deliberation_id})",
+                )
+                PurchaseOrderItem.objects.create(
+                    purchase_order=po,
+                    product=req.product,
+                    quantity_ordered=req.final_approved_qty,
+                    unit_price=req.unit_price,
+                )
+                req.resulting_po = po
+
+            req.save()
+            AuditEvent.objects.create(
+                event_type='APPROVAL_EXECUTED' if not dry_run else 'APPROVAL_DRY_RUN',
+                actor=approver_id,
+                deliberation_id=req.deliberation_id,
+                payload={
+                    'approval_id': req.pk,
+                    'decision': decision,
+                    'ai_qty': req.ai_recommended_qty,
+                    'final_qty': req.final_approved_qty,
+                    'po_id': req.resulting_po_id,
+                },
+            )
+            return req
